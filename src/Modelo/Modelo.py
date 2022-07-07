@@ -24,6 +24,13 @@ import time
 from flask_babel import gettext
 from community import community_louvain
 
+from matplotlib import animation, rc
+from IPython.display import HTML
+from operator import itemgetter
+import dynetx as dn
+import networkx as nx
+import matplotlib.pyplot as plt
+import time
 
 class Modelo:
     """
@@ -42,15 +49,20 @@ class Modelo:
         """ 
         self.__csv = Lectorcsv.Lectorcsv(self)
         self.__texto = list()
-        #comprobar longitud
         self.personajes= dict()
         self.__fincaps = list()
         self.__G = None
         self.__Gnoatt = None
+        self.__Gdinamica = None
         self.urlPelicula = ""
         self.diccionarioApariciones = dict()
         self.cambio = 0
         self.formato = 0
+        self.apar=0
+        self.rango=0
+        self.minapar=0
+        self.caps=False
+        self.frames=0
      
         
     def cambiarPantallas(self, cambiopantalla):
@@ -471,16 +483,19 @@ class Modelo:
             minapar: numero minimo de apariciones
             caps: si se tienen en cuenta los capitulos
         """
+        self.rango=rango
+        self.minapar=minapar
+        self.caps=caps
         persk = list(self.personajes.keys())
         tam = len(persk)
         self.__G = nx.Graph()
         for i in range(tam):
             #Se comprueba que se cumple con el requisito mínimo de apariciones
-            if(self.personajes[persk[i]].getNumApariciones()[0]>=minapar):
+            if(self.personajes[persk[i]].getNumApariciones()[0]>=self.minapar):
                 #La red es no dirigida sin autoenlaces así que no hace falta medir el peso 2 veces ni consigo mismo
                 for j in range(i+1,tam):
                     #Se comprueba que cumple el requisito mínimo de apariciones
-                    if(self.personajes[persk[j]].getNumApariciones()[0]>=minapar):
+                    if(self.personajes[persk[j]].getNumApariciones()[0]>=self.minapar):
                         peso=0
                         #Se recorren los capítulos
                         for cap in self.personajes[persk[i]].getPosicionPers().keys():
@@ -489,8 +504,8 @@ class Modelo:
                                 prev = False
                                 post = False
                                 #Si no se tienen en cuenta los capítulos
-                                if(not caps):
-                                    aux = posi-rango
+                                if(not self.caps):
+                                    aux = posi-self.rango
                                     capaux = cap
                                     #Si aux negativo se ha pasado al capítulo anterior capaux minimo de 2 para no salirnos de la lista
                                     while(aux<0 and capaux>1):
@@ -509,7 +524,7 @@ class Modelo:
                                                 if(posj>=aux):
                                                     peso+=1
                                     #Se repite el proceso anterior pero para capítulos posteriores
-                                    aux = posi + rango - self.__fincaps[cap-1]
+                                    aux = posi + self.rango - self.__fincaps[cap-1]
                                     capaux = cap
                                     while(aux>0 and capaux<len(self.__fincaps)):
                                         capaux+=1
@@ -524,13 +539,13 @@ class Modelo:
                                                 else:
                                                     break
                                 #Si se ha pasado al capítulo previo y al posterior se añaden directamente todas las posiciones del actual
-                                if(not caps and prev and post):
+                                if(not self.caps and prev and post):
                                     peso+=len(self.personajes[persk[j]].getPosicionPers()[cap])
                                 else:
                                     #Se comprueba en el capítulo actual las palabras que entran en el rango
                                     for posj in self.personajes[persk[j]].getPosicionPers()[cap]:
-                                        if(posj>=(posi-rango)):
-                                            if(posj<=(posi+rango)):
+                                        if(posj>=(posi-self.rango)):
+                                            if(posj<=(posi+self.rango)):
                                                 peso+=1
                                             else:
                                                 break
@@ -555,21 +570,23 @@ class Modelo:
         Args:
             apar: numero minimo de apariciones
         """
+        self.apar=apar 
         self.__G = nx.Graph()
         lista = list()
         aux = 0
         for key in self.diccionarioApariciones:
             aux = 0
-            if(self.personajes[key].getNumApariciones()[0]>=apar):
+            if(self.personajes[key].getNumApariciones()[0]>=self.apar):
                 for key1 in self.diccionarioApariciones:
-                    if (not key == key1):
-                        lista = Modelo.elementosComunes(self.diccionarioApariciones.get(key), self.diccionarioApariciones.get(key1))
+                    if(self.personajes[key1].getNumApariciones()[0]>=self.apar):
+                        if (not key == key1):
+                            lista = Modelo.elementosComunes(self.diccionarioApariciones.get(key), self.diccionarioApariciones.get(key1))
 
-                        if (not len(lista) == 0):
-                            #listaprueba.append((key,key1,len(lista)))
-                            peso = len(lista)
-                            self.__G.add_edge(key,key1,weight=int(peso))
-                            aux = 1
+                            if (not len(lista) == 0):
+                                #listaprueba.append((key,key1,len(lista)))
+                                peso = len(lista)
+                                self.__G.add_edge(key,key1,weight=int(peso))
+                                aux = 1
                 if(aux == 0):
                     self.__G.add_node(key)
             else:
@@ -598,6 +615,284 @@ class Modelo:
             
         """
         return json.dumps(nx.json_graph.node_link_data(self.__Gnoatt))
+
+    def listaEnlacesFinalPelicula(self):
+        """
+        Método para crear una lista que contiene el id del enlace, los nodos que tienen el enlace, el tipo de enlace, 
+        el intervalo de tiempo donde se crea el enlace y el peso del enlace. Está lista será para guiones de películas.
+
+        Args:
+
+        """
+        listaEnlaces = list()
+        listaFinalEnlaces=list()
+        indice=0
+        #Creamos una lista con los enlaces que hay. En la lista tenemos el nodo de origen y de destino, el peso (1), el tipo de
+        #enlace (no dirigido) y en que capitulo se da dicho enlace.
+        for key in self.diccionarioApariciones:
+            if(len(self.diccionarioApariciones.get(key))>=self.apar):
+                for key1 in self.diccionarioApariciones:
+                    if(len(self.diccionarioApariciones.get(key1))>=self.apar):
+                        if (not key == key1):
+                            listaEnlaces = list(set(self.diccionarioApariciones.get(key)).intersection(self.diccionarioApariciones.get(key1))) 
+                            if (not len(listaEnlaces) == 0):
+                                for i in range(len(listaEnlaces)):
+                                    r=[indice,key,key1,'Undirected',listaEnlaces[i],'1.0']
+                                    listaFinalEnlaces.append(r)
+                                    indice=indice+1
+        
+        return listaFinalEnlaces
+
+    def listaEnlacesFinalNovela(self,rango,minapar,caps):
+        """
+        Método para crear una lista que contiene el id del enlace, los nodos que tienen el enlace, el tipo de enlace, 
+        el intervalo de tiempo donde se crea el enlace y el peso del enlace. Está lista será para novelas.
+    
+        Args:
+            rango: rango de palabras
+            minapar: numero minimo de apariciones
+            caps: si se tienen en cuenta los capitulos
+        """
+        persk = list(self.personajes.keys())
+        tam = len(persk)
+        listaFinalEnlaces=list()
+        for i in range(tam):
+            #Se comprueba que se cumple con el requisito mínimo de apariciones
+            if(self.personajes[persk[i]].getNumApariciones()[0]>=minapar):
+                #La red es no dirigida sin autoenlaces así que no hace falta medir el peso 2 veces ni consigo mismo
+                for j in range(i+1,tam):
+                    #Se comprueba que cumple el requisito mínimo de apariciones
+                    if(self.personajes[persk[j]].getNumApariciones()[0]>=minapar):
+                        #Se recorren los capítulos
+                        for cap in self.personajes[persk[i]].getPosicionPers().keys():
+                            #Se obtienene las posiciones del personaje en el capítulo correspondiente
+                            for posi in self.personajes[persk[i]].getPosicionPers()[cap]:
+                                prev = False
+                                post = False
+                                #Si no se tienen en cuenta los capítulos
+                                if(not caps):
+                                    aux = posi-rango
+                                    capaux = cap
+                                    #Si aux negativo se ha pasado al capítulo anterior capaux minimo de 2 para no salirnos de la lista
+                                    while(aux<0 and capaux>1):
+                                        prev = True
+                                        capaux-=1
+                                        aux = self.__fincaps[capaux-1] + aux
+                                        #Si aux menor que 0 nos hemos saltado más de un capítulo
+                                        if(aux<0):
+                                            #Como nos hemos saltado el capítulo entero consideramos todas las posiciones que tiene el 
+                                            #segundo personaje en ese capítulo como relación
+                                            for pesos in range(len(self.personajes[persk[j]].getPosicionPers()[capaux])):
+                                                r=[i,persk[i],persk[j],'Undirected',cap,'1.0']
+                                                listaFinalEnlaces.append(r)
+                                        else:
+                                            #Comprobamos todas las palabras del capítulo previo que no nos hemos saltado por completo y añadimos
+                                            #las que se encuentren en el rango
+                                            for posj in self.personajes[persk[j]].getPosicionPers()[capaux]:
+                                                if(posj>=aux):
+                                                    r=[i,persk[i],persk[j],'Undirected',cap,'1.0']
+                                                    listaFinalEnlaces.append(r)
+                                    #Se repite el proceso anterior pero para capítulos posteriores
+                                    aux = posi + rango - self.__fincaps[cap-1]
+                                    capaux = cap
+                                    while(aux>0 and capaux<len(self.__fincaps)):
+                                        capaux+=1
+                                        post=True
+                                        if(aux>self.__fincaps[capaux-1]):
+                                            aux = aux - self.__fincaps[capaux-1]
+                                            for pesos in range(len(self.personajes[persk[j]].getPosicionPers()[capaux])):
+                                                r=[i,persk[i],persk[j],'Undirected',cap,'1.0']
+                                                listaFinalEnlaces.append(r)
+                                        else:
+                                            for posj in self.personajes[persk[j]].getPosicionPers()[capaux]:
+                                                if(posj<=aux):
+                                                    #peso+=1
+                                                    r=[i,persk[i],persk[j],'Undirected',cap,'1.0']
+                                                    listaFinalEnlaces.append(r)
+                                                else:
+                                                    break
+                                #Si se ha pasado al capítulo previo y al posterior se añaden directamente todas las posiciones del actual
+                                if(not caps and prev and post):
+                                    for pesos in range(len(self.personajes[persk[j]].getPosicionPers()[cap])):
+                                        r=[i,persk[i],persk[j],'Undirected',cap,'1.0']
+                                        listaFinalEnlaces.append(r)
+                                else:
+                                    #Se comprueba en el capítulo actual las palabras que entran en el rango
+                                    for posj in self.personajes[persk[j]].getPosicionPers()[cap]:
+                                        if(posj>=(posi-rango)):
+                                            if(posj<=(posi+rango)):
+                                                r=[i,persk[i],persk[j],'Undirected',cap,'1.0']
+                                                listaFinalEnlaces.append(r)
+                                            else:
+                                                break
+        
+        return listaFinalEnlaces
+
+    def ordenarRedDinamica(self,epub):
+        """
+        Método encargado de crear el grafo ordenado, calcular el intervalo de tiempo más alto y crear una lista para conocer los pesos en cada intervalo.
+        
+        Args:
+            epub: variable para conocer si el diccionario es una pelicula o un guion
+        """
+        if(epub):
+            listaFinalEnlaces=Modelo.listaEnlacesFinalNovela(self,self.rango,self.minapar,self.caps)
+        else:
+            listaFinalEnlaces=Modelo.listaEnlacesFinalPelicula(self)
+        #Interacciones
+        #G puede crecer agregando una interacción a la vez. Cada interacción se define unívocamente por
+        #sus puntos finales, u y v, así como por su marca de tiempo t.
+        listaOrdenada=sorted(listaFinalEnlaces, key=itemgetter(4), reverse=False)
+        g = dn.DynGraph(edge_removal=True)
+
+        for i in range(len(listaOrdenada)):
+            g.add_interaction(u=listaOrdenada[i][1], v=listaOrdenada[i][2], t=listaOrdenada[i][4])
+            
+        listaNueva=list()
+        for i in range(len(listaOrdenada)):
+            objetosNueva=[listaOrdenada[i][4],listaOrdenada[i][1],listaOrdenada[i][2]]
+            listaNueva.append(objetosNueva)
+        
+        lista=list()
+        tiempoMasAlto=0
+        for i in range(len(listaOrdenada)):
+            lista.append([listaOrdenada[i][1],listaOrdenada[i][2]])
+            tiempoMasAlto=listaOrdenada[i][4]
+        listaFiNal=list()
+        listasEnlPers=list()
+        listaEnlPers=dict()
+        for i in range(tiempoMasAlto):
+            for j in range(len(listaNueva)):
+                if listaNueva[j][0]==i+1:
+                    if str([listaNueva[j][1],listaNueva[j][2]]) in listaEnlPers:
+                        valorAntiguo=listaEnlPers.get(str([listaNueva[j][1],listaNueva[j][2]]))
+                        listaEnlPers[str([listaNueva[j][1],listaNueva[j][2]])]=valorAntiguo+1
+                        objNueva=[listaNueva[j][0],listaNueva[j][1],listaNueva[j][2],listaEnlPers.get(str([listaNueva[j][1],listaNueva[j][2]]))]
+                        listaFiNal.append(objNueva)
+                    else:  
+                        if [listaNueva[j][2], listaNueva[j][1]] not in listasEnlPers:
+                            #print(listaNueva[j][2], listaNueva[j][1])
+                            objNueva=[listaNueva[j][0],listaNueva[j][1],listaNueva[j][2],1]
+                            listaFiNal.append(objNueva)
+                            listaEnlPers[str([listaOrdenada[j][1],listaOrdenada[j][2]])]=1
+                            listasEnlPers.append([listaOrdenada[j][1],listaOrdenada[j][2]])
+        return g, listaFiNal, tiempoMasAlto
+
+
+
+    def vistaDinamica(self, frames, epub): 
+        """
+        Método que creara la red dinámica.
+        
+        Args:
+            frames: el intervalo de tiempo que queremos observar.
+            epub: variable para conocer si el diccionario es una pelicula o un guion
+        """
+        g, listaFiNal, tiempoMasAlto = Modelo.ordenarRedDinamica(self,epub)
+        self.frames=frames
+        frame=0
+        dInamico=nx.Graph()
+        persk = list(self.personajes.keys())
+        tam = len(persk)
+        while(frames>=frame):
+            for i in range(len(listaFiNal)):
+                if listaFiNal[i][0] == frame+1:
+                    dInamico.add_edge(listaFiNal[i][1],listaFiNal[i][2],weight=int(listaFiNal[i][3]))
+            if epub:
+                for j in range(tam):
+                    for cap in self.personajes[persk[j]].getPosicionPers().keys():
+                        if frame == cap:
+                            if(self.personajes[persk[j]].getNumApariciones()[0]>=self.minapar):
+                                if j not in listaFiNal:
+                                    dInamico.add_node(persk[j])
+            else:
+                for j in self.diccionarioApariciones.keys():
+                    if frame in self.diccionarioApariciones.get(j):
+                        if(len(self.diccionarioApariciones.get(j))>=self.apar):
+                            if j not in listaFiNal:
+                                dInamico.add_node(j)
+
+            frame=frame+1
+
+        self.__Gdinamica = dInamico.copy()
+        self.__G = dInamico.copy()
+
+        return json.dumps(nx.json_graph.node_link_data(self.__Gdinamica))
+
+    def exportGEXFdinamica(self,filename,frames,epub):
+        """
+        Método exportar la red dinámica a formato GEXF
+        
+        Args:
+            filename: ruta del nuevo fichero
+            frames: el intervalo de tiempo que queremos observar.
+            epub: variable para conocer si el diccionario es una pelicula o un guion
+        """
+        g, listaFiNal, tiempoMasAlto = Modelo.ordenarRedDinamica(self,epub)
+        T=nx.Graph()
+
+        for i in range(len(listaFiNal)):
+            if listaFiNal[i][0]<=frames:
+                if listaFiNal[i][1] not in T.nodes():
+                    T.add_node(listaFiNal[i][1], time=float(listaFiNal[i][0]))
+                if listaFiNal[i][2] not in T.nodes():
+                    T.add_node(listaFiNal[i][2], time=float(listaFiNal[i][0]))
+                if (listaFiNal[i][1],listaFiNal[i][2]) not in T.edges():
+                    T.add_edge(listaFiNal[i][1],listaFiNal[i][2],weight=int(listaFiNal[i][3]), time=float(listaFiNal[i][0]))
+                else: 
+                    T.edges[(listaFiNal[i][1],listaFiNal[i][2])]["weight"]=T.edges[(listaFiNal[i][1],listaFiNal[i][2])]["weight"]+1 
+        self.writeFile(filename,nx.generate_gexf(T))
+
+    def elementosRed(self):
+        """
+        Método encargado de mostranos los nodos de la red.
+
+        Args:
+
+        """
+        return self.__G.nodes()
+
+
+
+    def descargarRed(self, frames, filename,epub): 
+        """
+        Método que exportará la animación de la red dinámica.
+        
+        Args:
+            filename: ruta del nuevo fichero
+            frames: el intervalo de tiempo que queremos observar.
+            epub: variable para conocer si el diccionario es una pelicula o un guion
+        """
+        g, listaFiNal, tiempoMasAlto = Modelo.ordenarRedDinamica(self,epub)
+
+        def update(frames):
+            T=g.time_slice(t_from=frames, t_to=frames+1)
+            nx.set_edge_attributes(T,0,"weight")
+            widths = nx.get_edge_attributes(T, 'weight')
+            
+            for i in range(len(listaFiNal)):
+                if listaFiNal[i][0] == frames+1:
+                    if (listaFiNal[i][1],listaFiNal[i][2]) in T.edges():
+                        widths[listaFiNal[i][1],listaFiNal[i][2]]=listaFiNal[i][3]    
+            d = dict(T.degree())
+            nx.draw_networkx_nodes(T,pos,ax=ax,node_size=[v * 500 for v in d.values()], alpha=0.5,cmap=[v * 100 for v in d.values()])
+            nx.draw_networkx_edges(T,pos,ax=ax, edgelist = widths.keys(), width=list(widths.values()))
+            nx.draw_networkx_labels(T,pos,font_size=11,ax=ax)
+
+
+        T=nx.Graph()
+        T=g.time_slice(t_from=1, t_to=tiempoMasAlto)
+        fig, ax = plt.subplots(figsize=(30,30)) 
+        pos = nx.spring_layout(T)
+        listaEncapsul=list()
+        listaEncapsul.append(T.edges())
+        nx.set_edge_attributes(T,0,"weight")
+
+        ani = animation.FuncAnimation(fig, func=update, frames=frames, interval=10000)
+
+        writer = animation.FFMpegWriter(fps=10, bitrate=3500)
+        return ani.save(filename, writer = writer)
+
 
     def scrapeWiki(self,url):
         """
@@ -726,7 +1021,550 @@ class Modelo:
                 self.informe[s] = switch[s](valkcliqperrol)
             else:
                 self.informe[s] = switch[s]()
+    
+    def generarInformeDinamico(self, solicitud, direc,epub):
+        """
+        Método que maneja las solicitudes de informes dinámica
         
+        Args:
+            solicitud: lista con las metricas
+            direc: directorio donde guardar imagenes
+            epub: variable para conocer si el diccionario es una pelicula o un guion
+        """
+        switch = {'cbx cbx-nnod': self.nNodosDinamico(epub), 'cbx cbx-nenl': self.nEnlDinamico(epub), 'cbx cbx-nint': self.nIntDinamico(epub), 'cbx cbx-gradosin': self.gSinDinamica(epub), 'cbx cbx-gradocon': self.gConDinamica(epub), 'cbx cbx-dens': self.densDinamica(epub), 'cbx cbx-concomp': self.conCompDinamica(epub), 'cbx cbx-exc': self.excDinamica(epub), 'cbx cbx-dia': self.diamDinamica(epub), 'cbx cbx-rad': self.radDinamica(epub), 'cbx cbx-longmed': self.longMedDinamica(epub), 'cbx cbx-locclust': self.locClustDinamica(epub), 'cbx cbx-clust': self.clustDinamica(epub), 'cbx cbx-trans': self.transDinamica(epub), 'cbx cbx-centg': self.centGDinamica(epub), 'cbx cbx-centc': self.centCDinamica(epub), 'cbx cbx-centi': self.centIDinamica(epub), 'cbx cbx-ranwal': self.ranWalDinamica(epub), 'cbx cbx-centv': self.centVDinamica(epub),'cbx cbx-para': self.paRaDinamica(epub), 'cbx cbx-kcliperc': self.kCliPercDinamica, 'cbx cbx-girnew': self.girNewDinamica(epub), 'cbx cbx-greedy': self.greedyComunidadDinamica(epub), 'cbx cbx-louvain': self.louvainDinamica(epub), 'cbx cbx-roleskcliq': self.roleskclique, 'cbx cbx-rolesgirvan': self.rolesGirvan, 'cbx cbx-rolesgreedy': self.rolesGreedy, 'cbx cbx-roleslouvain': self.rolesLouvain}
+        valkcliqper =  solicitud['valkcliqper']
+        #valkcliqperrol = solicitud['valkcliqperrol']
+        del solicitud['valkcliqper']
+        #del solicitud['valkcliqperrol']
+        self.informeDina = dict()
+        self.dir = direc 
+        cont = 0
+        for s in solicitud.keys():
+            if('cbx cbx-kcliperc' == s):
+                self.informeDina[s] = switch[s](valkcliqper,epub)
+            #elif('cbx cbx-roleskcliq' == s):
+            #    self.informe[s] = switch[s](valkcliqperrol,epub)
+            else:
+                self.informeDina[s] = switch[s]
+
+    def generarValoresDescargaInforme(self):
+        """
+        Método que genera todas las solicitudes del informe dinámico para 
+        que posteriormente se pueda descargar en excel el informe dinámico.
+
+        Args:
+
+        """
+        contador=0
+        listaSolicitud=list()
+        for x in self.informeDina.keys():
+            if x=="cbx cbx-nnod" or x=="cbx cbx-nenl" or x=="cbx cbx-nint" or x=="cbx cbx-dens" or x=="cbx cbx-clust" or x=="cbx cbx-trans" or x=="cbx cbx-dia" or x=="cbx cbx-rad" or x=="cbx cbx-longmed":
+                if contador < 1:
+                    nombre="tablaRedes"
+                    listaSolicitud.append(nombre)
+                    contador=1
+            else:
+                listaSolicitud.append(x)
+        return listaSolicitud
+
+
+
+        
+    def nNodosDinamico(self,epub):
+        """
+        Método que devuelve el numero de nodos dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            Numero de nodos dinámico
+        """
+        guardarInforme=list()
+        print('numero nodos')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            #guardarInforme[i+1]=nx.number_of_nodes(self.__G)
+            guarda=nx.number_of_nodes(self.__G)
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        #tuplas=set(guardarInforme)
+        #nodosCount = collections.Counter(tuplas)
+        return guardarInforme
+
+    def nEnlDinamico(self,epub):
+        """
+        Método que devuelve el numero de enlaces dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            Numero de enlaces dinámico
+        """
+        guardarInforme=list()
+        print('numero enlaces')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            guarda=nx.number_of_edges(self.__G)
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+
+    def nIntDinamico(self,epub):
+        """
+        Método que devuelve el numero de interacciones dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion 
+
+        Return:
+            Numero de interacciones dinámico
+        """
+        guardarInforme=list()
+        print('numero interacciones')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            guarda=self.__G.size(weight='weight')
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+
+    def densDinamica(self,epub):
+        """
+        Método que devuelve la densidad de la red dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            Densidad de la red dinámico
+        """
+        guardarInforme=list()
+        print('densidad')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            guarda=nx.density(self.__G)
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+
+    def clustDinamica(self,epub):
+        """
+        Método que devuelve el clustering global de la red dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            clustering global dinámico
+        """
+        guardarInforme=list()
+        print('clustering global')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            guarda=nx.average_clustering(self.__G)
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+
+    def transDinamica(self,epub):
+        """
+        Método que devuelve la transitividad de la red dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            transitividad de la red dinámico
+        """
+        guardarInforme=list()
+        print('transitividad')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            guarda=nx.transitivity(self.__G)
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+
+    def diamDinamica(self,epub):
+        """
+        Método que devuelve el diametro de la red dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            diametro de la red dinámico
+        """
+        guardarInforme=list()
+        print('diametro')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            if(nx.is_connected(self.__G)):
+                guarda=nx.diameter(self.__G)
+            else:
+                guarda="No está conectado"
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+        
+    def radDinamica(self,epub):
+        """
+        Método que devuelve el radio de la red dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            radio de la red dinámico
+        """
+        guardarInforme=list()
+        print('radio')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            if(nx.is_connected(self.__G)):
+                guarda=nx.radius(self.__G)
+            else:
+                guarda="No está conectado"
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+        
+    def longMedDinamica(self,epub):
+        """
+        Método que devuelve la distancia media de la red dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            distancia media de la red dinámico
+        """
+        guardarInforme=list()
+        print('distancia media')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            if(nx.is_connected(self.__G)):
+                guarda=nx.average_shortest_path_length(self.__G)
+            else:
+                guarda="No está conectado"
+            todo=[i,guarda]
+            guardarInforme.append(todo)
+        return guardarInforme
+
+    def gSinDinamica(self,epub):
+        """
+        Método que devuelve el grado sin tener en cuenta el peso dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            Grado sin el peso dinámico
+        """
+        guardarInforme=list()
+        print('grado sin peso')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.degree(self.__G):
+                todo=[i,x[0],x[1]]
+                guardarInforme.append(todo)
+        return guardarInforme
+
+    def gConDinamica(self,epub):
+        """
+        Método que devuelve el grado teniendo en cuenta el peso dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            Grado con el peso dinámico
+        """
+        guardarInforme=list()
+        print('grado con peso')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.degree(self.__G,weight='weight'):
+                todo=[i,x[0],x[1]]
+                guardarInforme.append(todo)
+        return guardarInforme
+
+    def locClustDinamica(self,epub):
+        """
+        Método que devuelve el clustering de cada nodo dinámico
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            clustering de cada nodo dinámico
+        """
+        guardarInforme=list()
+        print('clustering de cada nodo')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.clustering(self.__G):
+                todo=[i,x,nx.clustering(self.__G)[x]]
+                guardarInforme.append(todo)
+        return guardarInforme
+
+    def excDinamica(self,epub):
+        """
+        Método que devuelve la excentricidad de la red dinámica
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            excentricidad de la red dinámica
+        """
+        guardarInforme=list()
+        print('excentricidad')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            if(nx.is_connected(self.__G)):
+                for x in nx.eccentricity(self.__G):
+                    todo=[i,x,nx.eccentricity(self.__G)[x]]
+                    guardarInforme.append(todo)
+            else:
+                j="La red no está conectada"
+                todo=[i,i,j]
+                guardarInforme.append(todo)
+        return guardarInforme
+
+    def centGDinamica(self,epub):
+        """
+        Método que devuelve la centralidad de grado dinámica
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            centralidad de grado dinámica
+        """
+        guardarInforme=list()
+        print('centralidad de grado')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.degree_centrality(self.__G):
+                todo=[i,x,nx.degree_centrality(self.__G)[x]]
+                guardarInforme.append(todo)
+        return guardarInforme
+        
+    def centCDinamica(self,epub):
+        """
+        Método que devuelve la centralidad de cercania dinámica
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            centralidad de cercania dinámica
+        """
+        guardarInforme=list()
+        print('centralidad de cercanía')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.closeness_centrality(self.__G):
+                todo=[i,x,nx.closeness_centrality(self.__G)[x]]
+                guardarInforme.append(todo)
+        return guardarInforme
+        
+    def centIDinamica(self,epub):
+        """
+        Método que devuelve la centralidad de intermediacion dinámica
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            centralidad de intermediacion dinámica
+        """
+        guardarInforme=list()
+        print('centralidad de intermediación')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.betweenness_centrality(self.__G):
+                todo=[i,x,nx.betweenness_centrality(self.__G)[x]]
+                guardarInforme.append(todo)
+        return guardarInforme
+        
+    def ranWalDinamica(self,epub):
+        """
+        Método que devuelve la centralidad de intermediacion random walker dinámica
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            centralidad de intermediacion random walker dinámica
+        """
+        guardarInforme=list()
+        print('random walk')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            if(nx.is_connected(self.__G)):
+                for x in nx.current_flow_betweenness_centrality(self.__G):
+                    todo=[i,x,nx.current_flow_betweenness_centrality(self.__G)[x]]
+                    guardarInforme.append(todo)
+            else:
+                j="La red no está conectada"
+                todo=[i,i,j]
+                guardarInforme.append(todo)
+        return guardarInforme
+        
+    def centVDinamica(self,epub):
+        """
+        Método que devuelve la centralidad de valor propio dinámica
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            centralidad de valor propio dinámica
+        """
+        guardarInforme=list()
+        print('Valor propio')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.eigenvector_centrality(self.__G):
+                todo=[i,x,nx.eigenvector_centrality(self.__G)[x]]
+                guardarInforme.append(todo)
+        return guardarInforme
+        
+    def paRaDinamica(self,epub):
+        """
+        Método que devuelve la centralidad de pagerank dinámica
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            centralidad de pagerank dinámica
+        """
+        guardarInforme=list()
+        print('PageRank')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            for x in nx.pagerank_numpy(self.__G,alpha=0.85):
+                todo=[i,x,nx.pagerank_numpy(self.__G,alpha=0.85)[x]]
+                guardarInforme.append(todo)
+        return guardarInforme
+
+    def conCompDinamica(self,epub):
+        """
+        Método que devuelve todos los componentes conectados dinámicamente
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            lista de cada componente conectado dinámico
+        """
+        guardarInforme=list()
+        print('componentes conectados')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            tiempo=1
+            for x in nx.connected_components(self.__G):
+                todo=[i,tiempo, [x]]
+                guardarInforme.append(todo)
+                tiempo=tiempo+1
+        return guardarInforme
+
+
+    def louvainDinamica(self,epub):
+        """
+        Método que ejecuta el algoritmo de louvain dinámico
+    
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+
+        Return:
+            lista con las particiones dinámicas.
+        """
+        guardarInforme=list()
+        print('Com louvain')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            partition = community_louvain.best_partition(self.__G)
+            particiones = self.ordenarFrozen(partition)
+            tiempo=1
+            for x in particiones:
+                todo=[i,tiempo, [x]]
+                guardarInforme.append(todo)
+                tiempo=tiempo+1
+        return guardarInforme
+
+
+    def greedyComunidadDinamica(self,epub):
+        """
+        Método que devuelve las comunidades con el algoritmo greedy de Clauset-Newman-Moore dinámicamente
+
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+
+        Return:
+            comunidades de Clauset-Newman-Moore dinámicas
+        """
+        guardarInforme=list()
+        print('com greedy')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            tiempo=1
+            for x in nx.algorithms.community.greedy_modularity_communities(self.__G):
+                todo=[i,tiempo, [x]]
+                guardarInforme.append(todo)
+                tiempo=tiempo+1
+        return guardarInforme
+
+    def kCliPercDinamica(self, k, epub):
+        """
+        Método que devuelve las comunidades de k-clique dinámicas
+        
+        Args:
+            k: valor k del k-clique
+            epub: variable para conocer si el diccionario es una pelicula o un guion
+        Return:
+            comunidades de k-clique dinámicas
+        """
+        guardarInforme=list()
+        print('com kcliq')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            tiempo=1
+            for x in nx.algorithms.community.k_clique_communities(self.__G, int(k)):
+                todo=[i,tiempo, [x]]
+                guardarInforme.append(todo)
+                tiempo=tiempo+1
+        return guardarInforme
+        
+    def girNewDinamica(self,epub):
+        """
+        Método que devuelve las comunidades de girvan-newman dinámicas
+        
+        Args:
+        epub: variable para conocer si el diccionario es una pelicula o un guion
+            
+        Return:
+            comunidades de girvan-newman dinámicas
+        """
+        guardarInforme=list()
+        print('com girvan')
+        for i in range(self.frames+1):
+            Modelo.vistaDinamica(self, i, epub)
+            d = nx.algorithms.community.girvan_newman(self.__G)
+            lista = list(tuple(sorted(c) for c in next(d)))
+            tiempo=1
+            for x in lista:
+                todo=[i,tiempo, [x]]
+                guardarInforme.append(todo)
+                tiempo=tiempo+1
+        return guardarInforme
+
+
     def nNodos(self):
         """
         Método que devuelve el numero de nodos
@@ -1101,8 +1939,6 @@ class Modelo:
             valores.append(valor)
         return particiones
         
-
-
     def louvain(self):
         """
         Método que ejecuta el algoritmo de louvain y guarda la imagen de las comunidades generadas
