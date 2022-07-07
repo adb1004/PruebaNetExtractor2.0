@@ -1,1 +1,1 @@
-PruebaNetExtractor 2.0
+PruebaNetExtractor
